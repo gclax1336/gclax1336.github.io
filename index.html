@@ -259,6 +259,7 @@ table.readings tbody tr { cursor: pointer; }
 table.readings tbody tr:nth-child(even) { background: var(--row-alt); }
 table.readings tbody tr.unread td { color: var(--faint); }
 table.readings tbody tr.missing td { color: var(--danger); }
+table.readings tbody tr.suspect td { color: var(--danger); font-weight: 700; }
 table.readings tbody tr.current { background: var(--gold); font-weight: 700; }
 table.readings tbody tr.current td { color: var(--ink); }
 
@@ -466,7 +467,7 @@ nav.tabs button.active svg { stroke: var(--green); }
 
     <div class="manual-row">
       <label class="field"><span>Volts</span><input type="number" id="manualVolts" step="any" inputmode="decimal" placeholder="Volts"></label>
-      <label class="field"><span>Amps</span><input type="number" id="manualAmps" step="any" inputmode="decimal" placeholder="Amps"></label>
+      <label class="field"><span>Amps</span><input type="text" id="manualAmps" inputmode="decimal" placeholder="Amps"></label>
       <button class="primary" id="manualSetBtn">Set</button>
     </div>
 
@@ -782,6 +783,9 @@ const VOICE_COMMANDS = {
   redo: 'REDO',           // clear current slot, re-read
   again: 'REDO',
   'next inverter': 'NEXT_INVERTER',
+  'flag issue': 'FLAG_ISSUE',   // open a non-conformance at the current string
+  'flag problem': 'FLAG_ISSUE',
+  'note issue': 'FLAG_ISSUE',
 };
 
 const NUMBER_WORDS = {
@@ -849,12 +853,36 @@ function wordsToNumberTokens(transcript) {
   return tokens;
 }
 
-/* Merge "num point num" into decimals, return numeric values with unit hints. */
+/* Merge "num point num" into decimals, return numeric values with unit hints.
+ * "less than / under / below <num>" marks the value lt — the field notation
+ * for below-threshold currents ("<0.5 A" all over the Watchung report). */
+const LT_WORDS = ['less', 'under', 'below'];
+
 function extractNumbers(transcript) {
   const tokens = wordsToNumberTokens(transcript);
   const values = [];
+  let ltPending = false;
   for (let i = 0; i < tokens.length; i++) {
     const tk = tokens[i];
+    if (tk.kind === 'word') {
+      if (LT_WORDS.includes(tk.text)) ltPending = true;
+      else if (tk.text !== 'than') ltPending = false;
+      continue;
+    }
+    // bare "point five" = 0.5
+    if (tk.kind === 'point' && tokens[i + 1] && tokens[i + 1].kind === 'num') {
+      const entry = { value: Number(`0.${tokens[i + 1].text}`), unit: null };
+      const after = tokens[i + 2];
+      if (after && after.kind === 'word') {
+        if (/^(volt|volts|vdc|v)$/.test(after.text)) entry.unit = 'volts';
+        else if (/^(amp|amps|a|ampere|amperes)$/.test(after.text)) entry.unit = 'amps';
+      }
+      if (ltPending) entry.lt = true;
+      values.push(entry);
+      ltPending = false;
+      i += 1;
+      continue;
+    }
     if (tk.kind !== 'num') continue;
     let text = tk.text;
     if (tokens[i + 1] && tokens[i + 1].kind === 'point' && tokens[i + 2] && tokens[i + 2].kind === 'num') {
@@ -868,7 +896,10 @@ function extractNumbers(transcript) {
       if (/^(volt|volts|vdc|v)$/.test(next.text)) unit = 'volts';
       else if (/^(amp|amps|a|ampere|amperes)$/.test(next.text)) unit = 'amps';
     }
-    values.push({ value: Number(text), unit });
+    const entry = { value: Number(text), unit };
+    if (ltPending) entry.lt = true;
+    values.push(entry);
+    ltPending = false;
   }
   return values;
 }
@@ -986,6 +1017,8 @@ function parseReading(transcript) {
   let volts = null, amps = null;
   const unassigned = [];
   for (const n of nums) {
+    // a "less than" value is a below-threshold current, whatever the labeling
+    if (n.lt && amps === null) { amps = { lt: n.value }; continue; }
     if (n.unit === 'volts' && volts === null) volts = n.value;
     else if (n.unit === 'amps' && amps === null) amps = n.value;
     else unassigned.push(n.value);
@@ -1009,8 +1042,32 @@ function formatVolts(v) {
 }
 
 function formatAmps(a) {
-  if (a === null || a === undefined || Number.isNaN(a)) throw new Error('formatAmps: no value');
+  if (a === null || a === undefined) throw new Error('formatAmps: no value');
+  if (typeof a === 'object') return `<${a.lt} A`; // below-threshold notation
+  if (Number.isNaN(a)) throw new Error('formatAmps: no value');
   return `${Number(a.toFixed(1))} A`;
+}
+
+/* Short display form for the capture UI ("<0.5" or the number). */
+function displayAmps(a) {
+  if (a === null || a === undefined) return null;
+  return typeof a === 'object' ? `<${a.lt}` : a;
+}
+
+/* Outlier check: a captured voltage far off its inverter's other strings is
+ * usually a misread ("112 VDC" among 1100s in the Pittsgrove original). */
+const OUTLIER_FRACTION = 0.15; // >15% off the sibling median = suspect
+
+function voltsOutlier(state, slotIdx) {
+  const slot = state.slots[slotIdx];
+  if (!slot || slot.volts === null) return false;
+  const siblings = state.slots.filter(
+    (s, i) => i !== slotIdx && s.inverter === slot.inverter && s.volts !== null);
+  if (siblings.length < 2) return false;
+  const sorted = siblings.map((s) => s.volts).sort((a, b) => a - b);
+  const median = sorted[Math.floor(sorted.length / 2)];
+  if (median === 0) return false;
+  return Math.abs(slot.volts - median) / median > OUTLIER_FRACTION;
 }
 
 /* "March 25th 2026" style used on the covers */
@@ -1115,6 +1172,14 @@ function applyVoiceResult(state, result) {
         if (next === -1) { state.cursor = state.slots.length; return 'end of list'; }
         state.cursor = next;
         return 'jumped to next inverter';
+      }
+      case 'FLAG_ISSUE': {
+        if (!slot) return null;
+        state.issues.push({
+          title: '', component: '', location: `${slot.inverter} ${slot.string}`,
+          description: '', resolution: '', photos: [],
+        });
+        return `issue flagged at ${slot.inverter} ${slot.string} — fill it in on the NC tab`;
       }
       default:
         throw new Error(`Unknown command ${result.command}`);
@@ -1222,7 +1287,8 @@ function captureProgress(state) {
 const CORE = {
   REPORT, COLORS, PAGE, CHECKLIST, CHECKLIST_FOOTNOTE, STATE_VERSION, AMPS_MAX,
   parseStringSpec, buildSlots, detectCommand, wordsToNumberTokens, extractNumbers,
-  parseReading, parseUtterance, formatVolts, formatAmps, formatReportDate, reportFileName,
+  parseReading, parseUtterance, formatVolts, formatAmps, displayAmps, voltsOutlier,
+  formatReportDate, reportFileName,
   paginateReadings, paginate, newState, serializeState, deserializeState,
   applyVoiceResult, applyUtterance, ensureSlot, usesMpptNaming, captureProgress,
 };
@@ -1644,9 +1710,40 @@ const EMPTY_VOLTS = '— — —', EMPTY_AMPS = '— —';
 
 function setVal(id, value) {
   const el = $(id);
-  const has = value !== null && value !== undefined;
-  el.textContent = has ? String(value) : (id === 'valVolts' ? EMPTY_VOLTS : EMPTY_AMPS);
+  const shown = id === 'valAmps' ? C.displayAmps(value) : value;
+  const has = shown !== null && shown !== undefined;
+  el.textContent = has ? String(shown) : (id === 'valVolts' ? EMPTY_VOLTS : EMPTY_AMPS);
   el.classList.toggle('captured', has);
+}
+
+/* ---------- Field feedback: sound + vibration so the tech never has to look ---------- */
+
+const BEEP = { CAPTURE_HZ: 880, WARN_HZ: 220, MS: 90 };
+let audioCtx = null;
+
+function beep(hz, count) {
+  if (!window.AudioContext) return;
+  if (!audioCtx) audioCtx = new AudioContext();
+  for (let i = 0; i < count; i++) {
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.frequency.value = hz;
+    gain.gain.value = 0.15;
+    osc.connect(gain).connect(audioCtx.destination);
+    const t = audioCtx.currentTime + i * (BEEP.MS * 2) / 1000;
+    osc.start(t);
+    osc.stop(t + BEEP.MS / 1000);
+  }
+}
+
+function feedbackCapture() {
+  beep(BEEP.CAPTURE_HZ, 1);
+  if (navigator.vibrate) navigator.vibrate(60);
+}
+
+function feedbackWarn() {
+  beep(BEEP.WARN_HZ, 2);
+  if (navigator.vibrate) navigator.vibrate([120, 60, 120]);
 }
 
 function renderCapture() {
@@ -1687,8 +1784,9 @@ function renderReadingsTable() {
     if (i === state.cursor) tr.className = 'current';
     else if (s.skipped || (s.volts === null && i < state.cursor)) tr.className = 'missing';
     else if (s.volts === null && s.amps === null) tr.className = 'unread';
+    if (C.voltsOutlier(state, i)) tr.classList.add('suspect');
     const volts = s.skipped ? 'skip' : (s.volts !== null ? s.volts : '—');
-    const amps = s.skipped ? '' : (s.amps !== null ? s.amps : '—');
+    const amps = s.skipped ? '' : (C.displayAmps(s.amps) ?? '—');
     tr.innerHTML = `<td>${shortInv(s.inverter)}</td><td>${shortString(s.string)}</td>` +
       `<td class="num">${volts}</td><td class="num">${amps}</td>`;
     tr.addEventListener('click', () => {
@@ -1698,6 +1796,8 @@ function renderReadingsTable() {
     });
     tbody.appendChild(tr);
   });
+  const current = tbody.querySelector('tr.current');
+  if (current) current.scrollIntoView({ block: 'nearest' });
 }
 
 function applyAndRender(result) {
@@ -1714,8 +1814,11 @@ $('nextInvBtn').addEventListener('click', () => applyAndRender({ type: 'command'
 
 $('manualSetBtn').addEventListener('click', () => {
   const v = parseFloat($('manualVolts').value);
-  const a = parseFloat($('manualAmps').value);
-  if (Number.isNaN(v) || Number.isNaN(a)) { alert('Enter both volts and amps.'); return; }
+  const rawAmps = $('manualAmps').value.trim();
+  // "<0.5" is valid field notation for below-threshold current
+  const a = rawAmps.startsWith('<') ? { lt: parseFloat(rawAmps.slice(1)) } : parseFloat(rawAmps);
+  const ampsBad = typeof a === 'object' ? Number.isNaN(a.lt) : Number.isNaN(a);
+  if (Number.isNaN(v) || ampsBad) { alert('Enter both volts and amps ("<0.5" works for below-threshold).'); return; }
   applyAndRender({ type: 'reading', volts: v, amps: a });
   $('manualVolts').value = ''; $('manualAmps').value = '';
 });
@@ -1739,6 +1842,7 @@ async function startListening() {
   $('micLabel').textContent = 'Listening…';
   $('micBtn').classList.add('listening');
   $('recPill').classList.add('on');
+  acquireWakeLock(); // phone must not sleep mid-capture
   await startRecorder(); // recorder first — recognition may claim the mic on some phones
   startRecognition();
 }
@@ -1750,7 +1854,30 @@ function stopListening() {
   $('recPill').classList.remove('on');
   if (recognition) { recognition.onend = null; recognition.stop(); recognition = null; }
   stopRecorder();
+  releaseWakeLock();
 }
+
+/* ---------- Screen wake lock while listening ---------- */
+
+let wakeLock = null;
+
+async function acquireWakeLock() {
+  if (!navigator.wakeLock) return; // not supported — tech keeps screen awake manually
+  try {
+    wakeLock = await navigator.wakeLock.request('screen');
+  } catch (_err) {
+    wakeLock = null; // denied (low battery mode etc.) — capture still works
+  }
+}
+
+function releaseWakeLock() {
+  if (wakeLock) { wakeLock.release(); wakeLock = null; }
+}
+
+document.addEventListener('visibilitychange', () => {
+  // returning to the app while listening re-acquires the lock (it auto-releases on hide)
+  if (document.visibilityState === 'visible' && listening) acquireWakeLock();
+});
 
 function startRecognition() {
   recognition = new SpeechRecognition();
@@ -1765,10 +1892,23 @@ function startRecognition() {
         const text = res[0].transcript.trim();
         $('transcript').textContent = `“${text}”`;
         const invCountBefore = state.inverters.length;
+        const issueCountBefore = state.issues.length;
+        const cursorBefore = state.cursor;
         const msg = C.applyUtterance(state, C.parseUtterance(text, C.usesMpptNaming(state)));
         if (msg) $('lastAction').textContent = msg;
+        // the slot just completed is the one the cursor moved past
+        const justDone = state.cursor !== cursorBefore ? cursorBefore : state.cursor;
+        if (msg && msg.startsWith('captured')) {
+          if (C.voltsOutlier(state, justDone)) {
+            feedbackWarn();
+            $('lastAction').textContent = `${msg} — ⚠ reads far off this inverter's other strings. Say "back" then "redo" if that's wrong.`;
+          } else {
+            feedbackCapture();
+          }
+        }
         renderCapture();
         if (state.inverters.length !== invCountBefore) renderInvRows(); // voice built new setup rows
+        if (state.issues.length !== issueCountBefore) { renderNcList(); feedbackCapture(); }
         autosave();
       } else {
         interim += res[0].transcript;
