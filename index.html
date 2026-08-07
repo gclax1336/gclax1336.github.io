@@ -275,6 +275,10 @@ table.readings tbody tr.current td { color: var(--ink); }
 /* ---------- non-conformance ---------- */
 .nc-card { border-left: 4px solid var(--gold); }
 .nc-card .nc-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.loc-count {
+  font-family: var(--font-head); font-size: 13px; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--muted); align-self: center;
+}
 .nc-card .nc-num {
   font-family: var(--font-head); font-weight: 700; color: var(--green);
   font-size: 16px; letter-spacing: .06em; text-transform: uppercase;
@@ -1614,12 +1618,14 @@ const $ = (id) => document.getElementById(id);
 
 /* ---------- Tabs ---------- */
 
+function showTab(pane) {
+  document.querySelectorAll('nav.tabs button').forEach((b) => b.classList.toggle('active', b.dataset.pane === pane));
+  document.querySelectorAll('.tab-pane').forEach((p) => p.classList.remove('active'));
+  $(`pane-${pane}`).classList.add('active');
+}
+
 document.querySelectorAll('nav.tabs button').forEach((btn) => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('nav.tabs button').forEach((b) => b.classList.toggle('active', b === btn));
-    document.querySelectorAll('.tab-pane').forEach((p) => p.classList.remove('active'));
-    $(`pane-${btn.dataset.pane}`).classList.add('active');
-  });
+  btn.addEventListener('click', () => showTab(btn.dataset.pane));
 });
 
 /* ---------- Site tab ---------- */
@@ -2099,9 +2105,15 @@ function renderNcList() {
       <label class="field"><span>Location(s)</span><input type="text" data-k="location" placeholder="Array"></label>
       <label class="field"><span>Description (detail page)</span><textarea data-k="description" placeholder="What it is and why it matters"></textarea></label>
       <label class="field"><span>Resolution / Next Steps</span><textarea data-k="resolution" placeholder="Modules to be replaced during next dispatch to site."></textarea></label>
-      <button class="secondary small" data-act="photo">+ Add Photos</button>
+      <div class="btn-row">
+        <button class="secondary small" data-act="photo">+ Add Photos</button>
+        <button class="primary small" data-act="locate">+ Add Location on Map</button>
+        <span class="loc-count" data-el="loccount"></span>
+      </div>
       <input type="file" accept="image/*" multiple hidden>
       <div class="photo-grid"></div>`;
+    card.querySelector('[data-act="locate"]').addEventListener('click', () => startPlacing(idx));
+    card.querySelector('[data-el="loccount"]').textContent = markerCountLabel(idx);
     card.querySelectorAll('[data-k]').forEach((el) => {
       el.value = issue[el.dataset.k];
       el.addEventListener('input', () => { issue[el.dataset.k] = el.value; autosave(); });
@@ -2150,20 +2162,50 @@ $('clearMarkersBtn').addEventListener('click', () => {
   renderMap(); autosave();
 });
 
+/* ---------- Placing markers for a non-conformance ----------
+ * The tech walks the site, finds the same issue in several spots, and drops a
+ * marker each time. Placing mode stays ON until they say done, and any NC can
+ * be re-opened later to add more locations. */
+
+function markerCount(issueIdx) {
+  return state.map ? state.map.markers.filter((m) => m.issueIdx === issueIdx).length : 0;
+}
+
+function markerCountLabel(issueIdx) {
+  const n = markerCount(issueIdx);
+  return n === 0 ? 'no locations yet' : `${n} location${n === 1 ? '' : 's'} placed`;
+}
+
+function startPlacing(issueIdx) {
+  if (!state.map) {
+    alert('Upload the stringing diagram on the Site tab first, then place markers.');
+    showTab('site');
+    return;
+  }
+  $('mapNcSelect').value = String(issueIdx);
+  showTab('site');
+  renderMap();
+  $('mapWrap').scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
 function renderMapNcSelect() {
   const sel = $('mapNcSelect');
+  const keep = sel.value;
   sel.innerHTML = '';
   state.issues.forEach((issue, idx) => {
     const opt = document.createElement('option');
     opt.value = String(idx);
-    opt.textContent = `#${idx + 1} — ${issue.title || '(untitled)'}`;
+    opt.textContent = `#${idx + 1} — ${issue.title || '(untitled)'} · ${markerCountLabel(idx)}`;
     sel.appendChild(opt);
   });
-  $('mapMode').classList.toggle('placing', state.issues.length > 0 && !!state.map);
+  if (keep && Number(keep) < state.issues.length) sel.value = keep;
+  const ready = state.issues.length > 0 && !!state.map;
+  $('mapMode').classList.toggle('placing', ready);
   $('mapMode').textContent = state.issues.length === 0
-    ? 'Add a non-conformance first, then tap its location on the diagram.'
-    : (state.map ? 'Tap the diagram to drop the selected marker. Tap a marker to remove it.'
-                 : 'Upload the stringing diagram, then tap to place markers.');
+    ? 'Add a non-conformance on the NC tab first, then tap its location on the diagram.'
+    : (state.map
+      ? `Tapping the diagram drops a marker for #${Number(sel.value) + 1}. Tap as many spots as you need — come back any time to add more. Tap a marker to remove it.`
+      : 'Upload the stringing diagram, then tap to place markers.');
 }
 
 function renderMap() {
@@ -2181,7 +2223,7 @@ function renderMap() {
     el.addEventListener('click', (ev) => {
       ev.stopPropagation();
       state.map.markers.splice(mIdx, 1);
-      renderMap(); autosave();
+      renderMap(); renderNcList(); autosave();
     });
     wrap.appendChild(el);
   });
@@ -2195,8 +2237,11 @@ $('mapWrap').addEventListener('click', (ev) => {
   const y = (ev.clientY - rect.top) / rect.height;
   if (x < 0 || x > 1 || y < 0 || y > 1) return;
   state.map.markers.push({ issueIdx: Number($('mapNcSelect').value), x, y });
-  renderMap(); autosave();
+  feedbackCapture();
+  renderMap(); renderNcList(); autosave();
 });
+
+$('mapNcSelect').addEventListener('change', renderMapNcSelect);
 
 /* ---------- Session save / load / reset ---------- */
 
