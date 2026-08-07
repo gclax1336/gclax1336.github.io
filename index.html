@@ -16,7 +16,10 @@
  * corners, blueprint "+" ticks.
  * ============================================================ */
 :root {
-  --paper: #edeeec;
+  --paper: #2f3230;        /* dark field ground (Grant's call) */
+  --on-dark: #a8b5a9;      /* muted text sitting directly on the ground */
+  --on-dark-strong: #ffffff;
+  --on-dark-green: #93d39e;
   --ink: #101311;
   --green: #13501b;
   --gold: #e8b830;
@@ -102,7 +105,7 @@ main { padding: 10px 14px; max-width: 640px; margin: 0 auto; }
 
 /* blueprint corner ticks: pseudo for top pair, <i class="tk"> for bottom pair */
 .ticks::before, .ticks::after, .ticks > .tk::before, .ticks > .tk::after {
-  position: absolute; font: 12px var(--font-head); color: var(--green);
+  position: absolute; font: 12px var(--font-head); color: var(--gold);
   content: '+'; line-height: 1; z-index: 1;
 }
 .ticks::before { top: -7px; left: -4px; }
@@ -215,10 +218,10 @@ details#invSetup .setup-body { padding: 4px 14px 12px; }
 .mic-btn.listening svg { stroke: var(--green); animation: recpulse 1.4s infinite; }
 @keyframes recpulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
 
-/* ---------- heard / last action ---------- */
-.heard { margin: 8px 2px 0; border-left: 3px solid var(--sage); padding-left: 10px; }
-.transcript { font-size: 14px; color: var(--faint); font-style: italic; min-height: 20px; }
-.lastaction { font-size: 14px; font-weight: 600; color: var(--green); min-height: 20px; margin-top: 2px; }
+/* ---------- heard / last action (sits on the dark ground) ---------- */
+.heard { margin: 8px 2px 0; border-left: 3px solid var(--muted); padding-left: 10px; }
+.transcript { font-size: 14px; color: var(--on-dark); font-style: italic; min-height: 20px; }
+.lastaction { font-size: 14px; font-weight: 600; color: var(--on-dark-green); min-height: 20px; margin-top: 2px; }
 
 /* ---------- command + manual rows ---------- */
 .cmd-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 8px; }
@@ -231,11 +234,12 @@ details#invSetup .setup-body { padding: 4px 14px 12px; }
 .manual-row label.field span { display: none; }
 .manual-row button { height: 48px; padding: 0; font-size: 18px; }
 
-/* ---------- progress ---------- */
+/* ---------- progress (sits on the dark ground) ---------- */
 .progress-wrap { margin: 10px 2px 6px; }
 .progress-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 5px; }
+.progress-head .eyebrow-label { color: var(--on-dark); }
 .progress-label {
-  font-family: var(--font-head); font-size: 20px; font-weight: 700; color: var(--ink);
+  font-family: var(--font-head); font-size: 20px; font-weight: 700; color: var(--on-dark-strong);
   font-variant-numeric: tabular-nums;
 }
 .progressbar { height: 10px; background: #fff; border: 1px solid var(--green); }
@@ -300,7 +304,7 @@ table.readings tbody tr.current td { color: var(--ink); }
 /* ---------- tab bar ---------- */
 nav.tabs {
   position: fixed; bottom: 0; left: 0; right: 0; z-index: 10;
-  display: grid; grid-template-columns: repeat(6, 1fr);
+  display: grid; grid-auto-flow: column; grid-auto-columns: 1fr;
   background: var(--tab-bg); border-top: 1px solid var(--green);
   height: calc(76px + env(safe-area-inset-bottom)); padding-bottom: env(safe-area-inset-bottom);
 }
@@ -393,6 +397,21 @@ nav.tabs button.active svg { stroke: var(--green); }
       <label class="field"><span>Address</span><input type="text" id="siteAddress" placeholder="Tiverstock Drive Pittsgrove Township, NJ"></label>
       <label class="field"><span>Visit date</span><input type="date" id="siteDate"></label>
       <label class="field"><span>Technician</span><input type="text" id="siteTech" placeholder="Augustine Torres"></label>
+    </div>
+    <div class="card">
+      <h2>Stringing Diagram / Site Map</h2>
+      <input type="file" id="mapInput" accept="image/*" hidden>
+      <div class="btn-row">
+        <button class="primary small" id="uploadMapBtn">Upload Diagram</button>
+        <button class="secondary small" id="clearMarkersBtn">Clear Markers</button>
+      </div>
+      <div class="map-mode" id="mapMode">Upload the stringing diagram, then pick a non-conformance below and tap its location. Tap a marker to remove it.</div>
+      <label class="field" style="margin-top:8px"><span>Placing marker for</span>
+        <select id="mapNcSelect"></select>
+      </label>
+      <div class="map-wrap" id="mapWrap" style="display:none">
+        <img id="mapImg" alt="stringing diagram">
+      </div>
     </div>
   </section>
 
@@ -496,25 +515,6 @@ nav.tabs button.active svg { stroke: var(--green); }
     <div id="ncList" style="margin-top:12px"></div>
   </section>
 
-  <!-- ============ MAP ============ -->
-  <section class="tab-pane" id="pane-map">
-    <div class="card">
-      <h2>Stringing Diagram / Site Map</h2>
-      <input type="file" id="mapInput" accept="image/*" hidden>
-      <div class="btn-row">
-        <button class="primary small" id="uploadMapBtn">Upload Diagram</button>
-        <button class="secondary small" id="clearMarkersBtn">Clear Markers</button>
-      </div>
-      <div class="map-mode" id="mapMode">Upload the stringing diagram, then pick a non-conformance below and tap its location. Tap a marker to remove it.</div>
-      <label class="field" style="margin-top:8px"><span>Placing marker for</span>
-        <select id="mapNcSelect"></select>
-      </label>
-      <div class="map-wrap" id="mapWrap" style="display:none">
-        <img id="mapImg" alt="stringing diagram">
-      </div>
-    </div>
-  </section>
-
   <!-- ============ EXPORT ============ -->
   <section class="tab-pane" id="pane-export">
     <div class="card ticks"><i class="tk"></i>
@@ -548,8 +548,6 @@ nav.tabs button.active svg { stroke: var(--green); }
     <svg width="23" height="23" viewBox="0 0 24 24" fill="none" stroke-width="1.5" stroke-linecap="square"><path d="M3 8h4l2-2h6l2 2h4v11H3zM12 17a3.4 3.4 0 100-6.8 3.4 3.4 0 000 6.8z"/></svg>Photos</button>
   <button data-pane="nc">
     <svg width="23" height="23" viewBox="0 0 24 24" fill="none" stroke-width="1.5" stroke-linecap="square"><path d="M12 4l9 16H3zM12 10v4M12 17h.01"/></svg>NC</button>
-  <button data-pane="map">
-    <svg width="23" height="23" viewBox="0 0 24 24" fill="none" stroke-width="1.5" stroke-linecap="square"><path d="M3 6l6-2 6 2 6-2v14l-6 2-6-2-6 2zM9 4v14M15 6v14"/></svg>Map</button>
   <button data-pane="export">
     <svg width="23" height="23" viewBox="0 0 24 24" fill="none" stroke-width="1.5" stroke-linecap="square"><path d="M12 3v12M7 11l5 5 5-5M4 20h16"/></svg>Export</button>
 </nav>
@@ -1522,7 +1520,28 @@ function showBanner(msg) {
 
 /* ---------- State ---------- */
 
-let state = loadAutosaved() || C.newState();
+/* Every fresh report starts with Inverter 1 · String 1 on deck — the tech can
+ * just hit Listen and talk; addressed narration builds the rest of the setup. */
+function seedStarterSlot(st) {
+  if (st.slots.length === 0) C.ensureSlot(st, 1, '1');
+  return st;
+}
+
+/* Voice-created inverters have no typed spec — derive one from their actual
+ * slots so the setup rows stay accurate and Apply Configuration keeps working. */
+function deriveSpec(st, label) {
+  const ids = st.slots.filter((s) => s.inverter === label).map((s) => s.string.replace(/^String\s+/i, ''));
+  if (ids.length === 0) return '';
+  if (!ids.some((id) => id.includes('-'))) return String(ids.length);
+  const counts = new Map();
+  ids.forEach((id) => {
+    const mppt = id.split('-')[0];
+    counts.set(mppt, (counts.get(mppt) || 0) + 1);
+  });
+  return [...counts.values()].join(',');
+}
+
+let state = seedStarterSlot(loadAutosaved() || C.newState());
 if (!state.site.date) state.site.date = new Date().toISOString().slice(0, 10);
 
 const $ = (id) => document.getElementById(id);
@@ -1563,6 +1582,7 @@ function renderInvRows() {
   const wrap = $('invRows');
   wrap.innerHTML = '';
   state.inverters.forEach((inv, idx) => {
+    if (inv.spec.trim() === '') inv.spec = deriveSpec(state, inv.label);
     const row = document.createElement('div');
     row.className = 'inv-row';
     const label = document.createElement('input');
@@ -1634,7 +1654,7 @@ function renderCapture() {
   const target = $('target');
   if (state.slots.length === 0) {
     $('targetInv').textContent = '—';
-    $('targetStr').textContent = 'Set up first';
+    $('targetStr').textContent = 'Say: inverter 1…';
     setVal('valVolts', null); setVal('valAmps', null);
   } else if (!slot) {
     target.classList.add('done');
@@ -1715,7 +1735,6 @@ async function startListening() {
     alert('Speech recognition is not supported in this browser. Use Chrome (Android) or Safari (iPhone), or type readings manually.');
     return;
   }
-  if (state.slots.length === 0) { alert('Apply an inverter configuration on the Site tab first.'); return; }
   listening = true;
   $('micLabel').textContent = 'Listening…';
   $('micBtn').classList.add('listening');
@@ -1745,9 +1764,11 @@ function startRecognition() {
       if (res.isFinal) {
         const text = res[0].transcript.trim();
         $('transcript').textContent = `“${text}”`;
+        const invCountBefore = state.inverters.length;
         const msg = C.applyUtterance(state, C.parseUtterance(text, C.usesMpptNaming(state)));
         if (msg) $('lastAction').textContent = msg;
         renderCapture();
+        if (state.inverters.length !== invCountBefore) renderInvRows(); // voice built new setup rows
         autosave();
       } else {
         interim += res[0].transcript;
@@ -2065,7 +2086,7 @@ $('sessionInput').addEventListener('change', (ev) => {
 
 $('resetBtn').addEventListener('click', () => {
   if (!confirm('Clear all data for this visit? This cannot be undone.')) return;
-  state = C.newState();
+  state = seedStarterSlot(C.newState());
   state.site.date = new Date().toISOString().slice(0, 10);
   if (HAS_STORAGE) window.localStorage.removeItem(AUTOSAVE_KEY);
   renderAll();
@@ -2328,7 +2349,7 @@ if (!HAS_STORAGE) $('storageBanner').classList.add('show');
 bindSiteFields();
 renderAll();
 // setup panel starts open until a string config exists
-$('invSetup').open = state.slots.length === 0;
+$('invSetup').open = state.slots.length <= 1; // seeded-only = still unconfigured
 </script>
 <script>/* ============================================================
  * PM Report Builder — cloud UI layer (login, MFA, reports list, sync)
@@ -2430,7 +2451,7 @@ async function refreshReportsList() {
         autosave();
         dirty = false; clearTimeout(saveTimer); // opening is not an edit — no phantom cloud write
         renderAll();
-        $('invSetup').open = state.slots.length === 0;
+        $('invSetup').open = state.slots.length <= 1; // seeded-only = still unconfigured
         setSyncStatus('synced');
         show('app');
       } catch (err) { alert(err.message); }
@@ -2521,7 +2542,7 @@ document.getElementById('challengeVerifyBtn').addEventListener('click', async ()
 });
 
 document.getElementById('newReportBtn').addEventListener('click', () => {
-  state = C.newState();
+  state = seedStarterSlot(C.newState());
   state.site.date = new Date().toISOString().slice(0, 10);
   S.currentReport = null;
   dirty = false;
