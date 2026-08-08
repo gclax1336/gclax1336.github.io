@@ -1582,7 +1582,25 @@ const PHOTO_MAX_DIM = 1400;
 const PHOTO_JPEG_QUALITY = 0.8;
 const SPEECH_LANG = 'en-US';
 
-const FONT = 'Arial';
+/* The originals are built in Office with Aptos — matching it is what makes a
+ * generated report look like the hand-made ones. PowerPoint substitutes on
+ * machines without it; HESP's Office has it (the source reports prove it). */
+const FONT = 'Aptos';
+const FONT_DISPLAY = 'Aptos Display';
+
+/* Cover geometry measured off the Pittsgrove/Watchung originals
+ * (540x720 pt page = 7.5" x 10"; values below converted to inches). */
+const COVER = {
+  LOGO: { w: 2.1, h: 0.82, y: 0.42 },
+  TITLE_Y: 1.5,            // originals sit at 1.13" with no logo above
+  TITLE_SIZE: 36,
+  TITLE_LINE_SPACING: 38.9,
+  INFO_X: 0.474,           // x0 = 34.1 pt
+  INFO_Y: 7.32,            // first line top = 541.1 pt
+  INFO_SIZE: 14,
+  INFO_LINE_SPACING: 23.1, // measured line pitch
+};
+
 const PPTX = {
   MARGIN_X: 0.4,
   CONTENT_W: 6.7,
@@ -2465,20 +2483,28 @@ async function generateReport() {
   addPhotoSlides(pptx, state.photos, C.REPORT.PHOTOS_TITLE);
   addChecklistSlide(pptx);
   addPerformanceSlides(pptx);
+  // Site map comes BEFORE the issue pages: the reader sees where everything is,
+  // then reads the numbered findings.
+  if (state.map) addMapSlide(pptx);
   if (state.issues.length > 0) {
     addNcSummarySlide(pptx);
     addNcDetailSlides(pptx);
   }
-  if (state.map) addMapSlide(pptx);
 
   await pptx.writeFile({ fileName: C.reportFileName(state.site.name, state.site.date) });
 }
 
 function addCoverSlide(pptx) {
   const slide = pptx.addSlide({ masterName: 'HESP' });
+  slide.addImage({
+    data: window.HESP_LOGO,
+    x: (C.PAGE.W - COVER.LOGO.w) / 2, y: COVER.LOGO.y,
+    w: COVER.LOGO.w, h: COVER.LOGO.h,
+  });
   slide.addText(C.REPORT.TITLE, {
-    x: 0.5, y: 0.8, w: 6.5, h: 1.6, fontFace: FONT, fontSize: 32,
-    align: 'center', color: C.COLORS.TEXT_BLACK,
+    x: PPTX.MARGIN_X, y: COVER.TITLE_Y, w: PPTX.CONTENT_W, h: 1.6,
+    fontFace: FONT_DISPLAY, fontSize: COVER.TITLE_SIZE, align: 'center',
+    color: C.COLORS.TEXT_BLACK, lineSpacing: COVER.TITLE_LINE_SPACING, valign: 'top',
   });
   const lines = [
     state.site.name,
@@ -2487,8 +2513,9 @@ function addCoverSlide(pptx) {
     `Technician – ${state.site.technician}`,
   ].filter(Boolean).map((t) => ({ text: t, options: { breakLine: true } }));
   slide.addText(lines, {
-    x: 0.5, y: 7.2, w: 6.5, h: 1.6, fontFace: FONT, fontSize: 13, bold: true,
-    color: C.COLORS.TEXT_BLACK, lineSpacing: 24, valign: 'bottom',
+    x: COVER.INFO_X, y: COVER.INFO_Y, w: PPTX.CONTENT_W, h: 1.4,
+    fontFace: FONT, fontSize: COVER.INFO_SIZE, bold: true,
+    color: C.COLORS.TEXT_BLACK, lineSpacing: COVER.INFO_LINE_SPACING, valign: 'top',
   });
 }
 
