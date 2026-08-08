@@ -264,12 +264,27 @@ table.readings tbody tr.current { background: var(--gold); font-weight: 700; }
 table.readings tbody tr.current td { color: var(--ink); }
 
 /* ---------- photos ---------- */
-.photo-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 10px; }
-.photo-grid .ph { position: relative; aspect-ratio: 4/3; overflow: hidden; background: var(--sage-bg); border: 1px solid var(--sage); }
-.photo-grid .ph img { width: 100%; height: 100%; object-fit: cover; }
-.photo-grid .ph button {
+.photo-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-top: 10px; }
+.photo-grid .ph {
+  position: relative; background: var(--sage-bg); border: 1px solid var(--sage);
+  padding-bottom: 38px; /* room for the placement picker */
+}
+.photo-grid .ph img { width: 100%; aspect-ratio: 4/3; object-fit: cover; display: block; }
+.photo-grid .ph .ph-del {
   position: absolute; top: 0; right: 0; background: var(--ink); color: #fff;
-  width: 30px; height: 30px; min-height: 0; padding: 0; font-size: 14px; line-height: 1;
+  width: 32px; height: 32px; min-height: 0; padding: 0; font-size: 14px; line-height: 1;
+}
+.photo-grid .ph .ph-order { position: absolute; top: 0; left: 0; display: flex; }
+.photo-grid .ph .ph-order button {
+  width: 32px; height: 32px; min-height: 0; padding: 0; font-size: 18px; line-height: 1;
+  background: rgba(16,19,17,.72); color: #fff;
+}
+.photo-grid .ph .ph-order button:disabled { opacity: .3; }
+.photo-grid .ph .ph-where {
+  position: absolute; bottom: 0; left: 0; right: 0;
+  min-height: 36px; height: 36px; padding: 0 6px; font-size: 13px;
+  font-family: var(--font-head); letter-spacing: .04em; text-transform: uppercase;
+  border: none; border-top: 1px solid var(--sage); background: #fff;
 }
 
 /* ---------- non-conformance ---------- */
@@ -846,6 +861,14 @@ function wordsToNumberTokens(transcript) {
         }
         parts.push(v);
       }
+      // A run running straight into "point" holds two values: the tech read the
+      // voltage and then the amps ("eleven eighty nine six point eight" =
+      // 1189 then 6.8). Split the last component off as the decimal's start.
+      if (parts.length >= 2 && (raw[i] === 'point' || raw[i] === 'dot')) {
+        tokens.push({ kind: 'num', text: parts.slice(0, -1).map(String).join('') });
+        tokens.push({ kind: 'num', text: String(parts[parts.length - 1]) });
+        continue;
+      }
       // join positionally: [11, 84] -> "1184"; [12, 0, 4] -> "1204"; [6] -> "6"
       const text = parts.map(String).join('');
       tokens.push({ kind: 'num', text });
@@ -1111,7 +1134,7 @@ function paginate(items, perPage) {
 
 /* ---------- Session state ---------- */
 
-const STATE_VERSION = 2;
+const STATE_VERSION = 3;
 
 function newState() {
   return {
@@ -1120,6 +1143,7 @@ function newState() {
     inverters: [],        // [{label, spec}]
     slots: [],            // built from inverters, holds readings
     cursor: 0,            // current capture slot index
+    voiceInverter: null,  // inverter # the tech last addressed — spans utterances
     photos: [],           // [{dataUrl, w, h}]
     issues: [],           // [{title, component, location, resolution, photos:[{dataUrl,w,h}]}]
     map: null,            // {dataUrl, w, h, markers:[{issueIdx, x, y}]}  x/y relative 0..1
@@ -1132,11 +1156,15 @@ function serializeState(state) {
   return JSON.stringify(state);
 }
 
-/* v1 sessions predate audioClips — migrate explicitly, reject anything else. */
+/* Older sessions predate later fields — migrate explicitly, reject anything else. */
 function migrateState(s) {
   if (s.version === 1) {
     s.audioClips = [];
     s.version = 2;
+  }
+  if (s.version === 2) {
+    s.voiceInverter = null;
+    s.version = 3;
   }
   return s;
 }
@@ -1242,7 +1270,29 @@ function ensureSlot(state, invNum, stringId) {
   }
   state.slots.splice(insertAt, 0, slot);
   if (state.cursor > insertAt) state.cursor++;
-  return insertAt;
+  return pruneStarterSlot(state, insertAt);
+}
+
+/* The app seeds "Inverter 1 · String 1" (marked seed:true) so the tech can
+ * start talking with no setup. On an MPPT site they say "string 1-1" instead,
+ * which would leave that seed behind as a blank row in the report — drop it
+ * once another slot exists and nothing was ever recorded on it. A slot the tech
+ * configured or filled is never a seed, so it is never pruned. */
+function seedSlot(state) {
+  const slot = { inverter: 'Inverter 1', invIdx: 0, string: 'String 1',
+    volts: null, amps: null, skipped: false, seed: true };
+  if (state.inverters.length === 0) state.inverters.push({ label: 'Inverter 1', spec: '' });
+  state.slots.push(slot);
+  return 0;
+}
+
+function pruneStarterSlot(state, keepIdx) {
+  const seedIdx = state.slots.findIndex(
+    (s) => s.seed === true && s.volts === null && s.amps === null && !s.skipped);
+  if (seedIdx === -1 || seedIdx === keepIdx || state.slots.length < 2) return keepIdx;
+  state.slots.splice(seedIdx, 1);
+  if (state.cursor > seedIdx) state.cursor--;
+  return seedIdx < keepIdx ? keepIdx - 1 : keepIdx;
 }
 
 /* Apply a parsed utterance (ordered items from parseUtterance).
@@ -1252,21 +1302,20 @@ function ensureSlot(state, invNum, stringId) {
  */
 function applyUtterance(state, items) {
   let msg = null;
-  let invContext = null;
-  const cur = state.slots[state.cursor];
-  if (cur) invContext = invNumberFromLabel(cur.inverter);
   for (const item of items) {
     if (item.type === 'address') {
       if ('inverter' in item) {
-        invContext = item.inverter;
+        state.voiceInverter = item.inverter;
         // park on the inverter's first unread slot until a string is named
         const first = state.slots.findIndex(
           (s) => s.inverter === `Inverter ${item.inverter}` && s.volts === null && !s.skipped);
         if (first !== -1) state.cursor = first;
         msg = `Inverter ${item.inverter}`;
       } else {
-        if (invContext === null) { msg = 'name the inverter first'; continue; }
-        state.cursor = ensureSlot(state, invContext, item.string);
+        const inv = currentInverterNumber(state);
+        if (inv === null) { msg = 'name the inverter first'; continue; }
+        state.cursor = ensureSlot(state, inv, item.string);
+        state.voiceInverter = inv;
         msg = `${state.slots[state.cursor].inverter} · String ${item.string}`;
       }
       continue;
@@ -1274,6 +1323,16 @@ function applyUtterance(state, items) {
     msg = applyVoiceResult(state, item) || msg;
   }
   return msg;
+}
+
+/* Which inverter a bare "string N" belongs to. The tech names the inverter once
+ * and then reels off strings across several utterances, so this must survive
+ * the cursor running past the end of the list — that dropped every reading
+ * after the first on a voice-built site. */
+function currentInverterNumber(state) {
+  if (state.voiceInverter !== null && state.voiceInverter !== undefined) return state.voiceInverter;
+  const cur = state.slots[state.cursor] || state.slots[state.slots.length - 1];
+  return cur ? invNumberFromLabel(cur.inverter) : null;
 }
 
 function invNumberFromLabel(label) {
@@ -1295,6 +1354,7 @@ const CORE = {
   formatReportDate, reportFileName,
   paginateReadings, paginate, newState, serializeState, deserializeState,
   applyVoiceResult, applyUtterance, ensureSlot, usesMpptNaming, captureProgress,
+  currentInverterNumber, pruneStarterSlot, seedSlot,
 };
 
 if (typeof module !== 'undefined' && module.exports) module.exports = CORE;
@@ -1593,7 +1653,7 @@ function showBanner(msg) {
 /* Every fresh report starts with Inverter 1 · String 1 on deck — the tech can
  * just hit Listen and talk; addressed narration builds the rest of the setup. */
 function seedStarterSlot(st) {
-  if (st.slots.length === 0) C.ensureSlot(st, 1, '1');
+  if (st.slots.length === 0) C.seedSlot(st);
   return st;
 }
 
@@ -2040,26 +2100,92 @@ $('photoInput').addEventListener('change', async (ev) => {
 });
 
 function renderPhotos() {
-  renderPhotoGrid($('photoGrid'), state.photos, (idx) => {
-    state.photos.splice(idx, 1);
-    renderPhotos();
-    autosave();
-  });
+  renderPhotoGrid($('photoGrid'), state.photos, GENERAL_PHOTOS);
 }
 
-function renderPhotoGrid(container, photos, onDelete) {
+/* ---------- Photo placement ----------
+ * Every photo lives in exactly one place: the General Site Photographs pages,
+ * or one non-conformance's detail page. Each tile carries a picker so the tech
+ * can re-file a photo after the fact, plus arrows to set the order it prints in.
+ */
+
+const GENERAL_PHOTOS = -1; // section id for the general site photo pages
+
+function photoSection(sectionId) {
+  return sectionId === GENERAL_PHOTOS ? state.photos : state.issues[sectionId].photos;
+}
+
+function sectionName(sectionId) {
+  return sectionId === GENERAL_PHOTOS
+    ? 'General site photos'
+    : `NC #${sectionId + 1} — ${state.issues[sectionId].title || 'untitled'}`;
+}
+
+function movePhoto(fromSection, idx, toSection) {
+  if (fromSection === toSection) return;
+  const [photo] = photoSection(fromSection).splice(idx, 1);
+  photoSection(toSection).push(photo);
+  renderPhotos(); renderNcList(); autosave();
+}
+
+function reorderPhoto(sectionId, idx, delta) {
+  const list = photoSection(sectionId);
+  const target = idx + delta;
+  if (target < 0 || target >= list.length) return;
+  [list[idx], list[target]] = [list[target], list[idx]];
+  renderPhotos(); renderNcList(); autosave();
+}
+
+function renderPhotoGrid(container, photos, sectionId) {
   container.innerHTML = '';
   photos.forEach((p, idx) => {
     const cell = document.createElement('div');
     cell.className = 'ph';
     const img = document.createElement('img');
     img.src = p.dataUrl;
+
     const del = document.createElement('button');
+    del.className = 'ph-del';
     del.textContent = '✕';
-    del.addEventListener('click', () => onDelete(idx));
-    cell.append(img, del);
+    del.title = 'Delete photo';
+    del.addEventListener('click', () => {
+      photoSection(sectionId).splice(idx, 1);
+      renderPhotos(); renderNcList(); autosave();
+    });
+
+    const order = document.createElement('div');
+    order.className = 'ph-order';
+    [['‹', -1], ['›', 1]].forEach(([glyph, delta]) => {
+      const b = document.createElement('button');
+      b.textContent = glyph;
+      b.title = delta < 0 ? 'Move earlier' : 'Move later';
+      b.disabled = idx + delta < 0 || idx + delta >= photos.length;
+      b.addEventListener('click', () => reorderPhoto(sectionId, idx, delta));
+      order.appendChild(b);
+    });
+
+    const picker = document.createElement('select');
+    picker.className = 'ph-where';
+    const options = [[GENERAL_PHOTOS, 'General photos']]
+      .concat(state.issues.map((iss, i) => [i, `NC #${i + 1}${iss.title ? ' ' + iss.title : ''}`]));
+    options.forEach(([value, text]) => {
+      const opt = document.createElement('option');
+      opt.value = String(value);
+      opt.textContent = text;
+      picker.appendChild(opt);
+    });
+    picker.value = String(sectionId);
+    picker.addEventListener('change', () => movePhoto(sectionId, idx, Number(picker.value)));
+
+    cell.append(img, del, order, picker);
     container.appendChild(cell);
   });
+  if (photos.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'hint';
+    empty.textContent = `No photos in ${sectionName(sectionId).toLowerCase()} yet.`;
+    container.appendChild(empty);
+  }
 }
 
 function compressImage(file) {
@@ -2135,10 +2261,7 @@ function renderNcList() {
       ev.target.value = '';
       renderNcList(); autosave();
     });
-    renderPhotoGrid(card.querySelector('.photo-grid'), issue.photos, (pIdx) => {
-      issue.photos.splice(pIdx, 1);
-      renderNcList(); autosave();
-    });
+    renderPhotoGrid(card.querySelector('.photo-grid'), issue.photos, idx);
     wrap.appendChild(card);
   });
   renderMapNcSelect();
